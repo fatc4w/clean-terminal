@@ -1,13 +1,19 @@
-"""Data fetching layer: yfinance + FRED, all results cached per-session."""
+"""Data fetching: yfinance (equities) + FRED (macro) + Polygon.io (FX)."""
 from __future__ import annotations
 from datetime import datetime
 import pandas as pd
+import requests
 import streamlit as st
 import yfinance as yf
 from fredapi import Fred
 
 
-_DEFAULT_FRED_KEY = "7abe0fefb07c9a7fd7a310473e0de4eb"
+# ---------------------------------------------------------------------------
+# API keys. Prefer Streamlit secrets, fall back to embedded defaults so the
+# app keeps running even if .streamlit/secrets.toml isn't set up.
+# ---------------------------------------------------------------------------
+_DEFAULT_FRED_KEY    = "7abe0fefb07c9a7fd7a310473e0de4eb"
+_DEFAULT_POLYGON_KEY = "bLpGMPIw63rhldGByrLngehm8BpLlCr5"
 
 
 def _fred_key() -> str:
@@ -17,13 +23,22 @@ def _fred_key() -> str:
         return _DEFAULT_FRED_KEY
 
 
+def _polygon_key() -> str:
+    try:
+        return st.secrets["POLYGON_API_KEY"]
+    except Exception:
+        return _DEFAULT_POLYGON_KEY
+
+
 @st.cache_resource(show_spinner=False)
 def _fred_client() -> Fred:
     return Fred(api_key=_fred_key())
 
 
-# Headline indices for the returns table (local-currency price returns —
-# this is the convention for the headline returns panel).
+# ---------------------------------------------------------------------------
+# Universe definitions
+# ---------------------------------------------------------------------------
+# Section 1 headline table (intentionally LOCAL currency).
 MARKETS = {
     "SPX":           "^GSPC",
     "NDQ":           "^NDX",
@@ -40,6 +55,7 @@ MARKETS = {
     "BMV IPC":       "^MXX",
 }
 
+# Correlation panel.
 CORR_ASSETS = {
     "WTI Crude":        {"source": "yf",   "ticker": "CL=F"},
     "SPX":              {"source": "yf",   "ticker": "^GSPC"},
@@ -49,7 +65,7 @@ CORR_ASSETS = {
     "DXY (Broad)":      {"source": "fred", "ticker": "DTWEXBGS"},
 }
 
-# RoW indices for the indexed-to-100 chart. SPX overlaid as reference.
+# Section 4: RoW indices that get USD-converted before indexing.
 ROW_MARKETS = {
     "SPX (US)":      "^GSPC",
     "TAIEX":         "^TWII",
@@ -62,22 +78,24 @@ ROW_MARKETS = {
     "BMV IPC":       "^MXX",
 }
 
-# FX rates used to convert each RoW local-currency price into USD.
-# Convention: tickers are USDxxx=X (= units of local currency per 1 USD),
-# so USD_price = local_price / fx_rate.
+# FX pairs are USD-base (USDxxx = units of local currency per 1 USD), so
+# the USD-denominated price = local_price / fx. SPX needs no conversion.
 ROW_FX = {
-    "SPX (US)":      None,         # already USD
-    "TAIEX":         "TWD=X",      # USD/TWD
-    "CSI 300":       "CNY=X",      # USD/CNY
-    "KOSPI":         "KRW=X",      # USD/KRW
-    "NIFTY 50":      "INR=X",      # USD/INR
-    "IBOVESPA":      "BRL=X",      # USD/BRL
-    "TASI":          "SAR=X",      # USD/SAR
-    "JSE All Share": "ZAR=X",      # USD/ZAR
-    "BMV IPC":       "MXN=X",      # USD/MXN
+    "SPX (US)":      None,
+    "TAIEX":         "USDTWD",
+    "CSI 300":       "USDCNY",
+    "KOSPI":         "USDKRW",
+    "NIFTY 50":      "USDINR",
+    "IBOVESPA":      "USDBRL",
+    "TASI":          "USDSAR",
+    "JSE All Share": "USDZAR",
+    "BMV IPC":       "USDMXN",
 }
 
 
+# ---------------------------------------------------------------------------
+# yfinance helpers (equities + FX fallback)
+# ---------------------------------------------------------------------------
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_yf_series(ticker: str, period: str = "max", start: str | None = None) -> pd.Series:
     try:
@@ -117,6 +135,9 @@ def get_yf_multi(tickers: list[str], period: str = "max", start: str | None = No
     return df.sort_index()
 
 
+# ---------------------------------------------------------------------------
+# FRED
+# ---------------------------------------------------------------------------
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_fred_series(series_id: str, start: str | None = None) -> pd.Series:
     try:
@@ -129,9 +150,67 @@ def get_fred_series(series_id: str, start: str | None = None) -> pd.Series:
     return s
 
 
+# ---------------------------------------------------------------------------
+# Polygon FX
+# ---------------------------------------------------------------------------
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_polygon_fx(pair: str, start: str, end: str | None = None) -> pd.Series:
+    """Daily FX close from Polygon.io.
+
+    pair: e.g. 'USDKRW'  (-> Polygon ticker 'C:USDKRW')
+    Returns a Series indexed by date, values in units of the quote currency
+    per 1 unit of the base currency. For 'USDKRW' that means KRW per USD.
+    """
+    if end is None:
+        end = pd.Timestamp.today().date().isoformat()
+
+    url = f"https://api.polygon.io/v2/aggs/ticker/C:{pair}/range/1/day/{start}/{end}"
+    params = {
+        "adjusted": "true",
+        "sort":     "asc",
+        "limit":    50000,
+        "apiKey":   _polygon_key(),
+    }
+    try:
+        r = requests.get(url, params=params, timeout=30)
+        r.raise_for_status()
+        payload = r.json()
+    except Exception:
+        return pd.Series(dtype=float, name=pair)
+
+    results = payload.get("results") or []
+    if not results:
+        return pd.Series(dtype=float, name=pair)
+
+    idx = pd.to_datetime([row["t"] for row in results], unit="ms").normalize()
+    vals = [row["c"] for row in results]
+    s = pd.Series(vals, index=idx, name=pair).dropna()
+    # Polygon FX runs continuously incl. weekends — that's fine; we ffill
+    # onto the equity calendar downstream.
+    return s
+
+
+def _get_fx_with_fallback(pair: str, start: str) -> pd.Series:
+    """Try Polygon first, then yfinance, so a single broken feed can't
+    silently drop a whole index from the chart."""
+    s = get_polygon_fx(pair, start=start)
+    if len(s) > 0:
+        return s
+    # yfinance fallback. yfinance uses xxx=X (short form) for USD/xxx.
+    yf_ticker = pair[3:] + "=X"   # 'USDKRW' -> 'KRW=X'
+    s = get_yf_series(yf_ticker, start=start)
+    if len(s) > 0:
+        return s
+    # last resort: long form
+    return get_yf_series(pair + "=X", start=start)
+
+
+# ---------------------------------------------------------------------------
+# Section-specific aggregators
+# ---------------------------------------------------------------------------
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_market_returns_table() -> pd.DataFrame:
-    """1W / 1M / 3M / YTD price returns (LOCAL currency)."""
+    """1W / 1M / 3M / YTD price returns in LOCAL currency."""
     tickers = list(MARKETS.values())
     df = get_yf_multi(tickers, period="2y")
     if df.empty:
@@ -181,19 +260,15 @@ def get_corr_assets_prices(years: int = 10) -> pd.DataFrame:
     return df
 
 
-def _to_usd(local_price: pd.Series, fx_usd_per_local_inv: pd.Series) -> pd.Series:
-    """Convert a local-currency price series to USD.
-
-    `fx_usd_per_local_inv` is the USD/xxx series (units of local currency
-    per 1 USD), i.e. the yfinance xxx=X quote. So USD_price = local / fx.
-    FX is forward-filled onto the equity calendar to handle different
-    trading hours / holidays cleanly.
-    """
-    if len(fx_usd_per_local_inv) == 0:
+def _to_usd(local_price: pd.Series, fx_usd_base: pd.Series) -> pd.Series:
+    """Convert local-currency price -> USD using fx = USD/xxx (xxx per 1 USD).
+    FX is reindexed onto the equity calendar and forward-filled so non-overlapping
+    holidays don't punch holes in the output."""
+    if len(fx_usd_base) == 0:
         return pd.Series(dtype=float)
-    joined_idx = local_price.index.union(fx_usd_per_local_inv.index).sort_values()
+    joined_idx = local_price.index.union(fx_usd_base.index).sort_values()
     fx_aligned = (
-        fx_usd_per_local_inv.reindex(joined_idx)
+        fx_usd_base.reindex(joined_idx)
         .ffill()
         .reindex(local_price.index)
     )
@@ -203,34 +278,44 @@ def _to_usd(local_price: pd.Series, fx_usd_per_local_inv: pd.Series) -> pd.Serie
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_row_prices(years: int = 10) -> pd.DataFrame:
-    """RoW equity indices converted to USD terms, aligned on a business-day grid.
+    """RoW equity indices converted to USD terms, business-day aligned.
 
-    SPX is left as-is (already USD). Every other index is divided by its
-    matching USD/xxx FX series so the resulting line measures what a USD
-    investor actually earned (price + FX). If an FX series fails to load,
-    that index is dropped from the chart rather than shown in mixed units.
+    FX is sourced from Polygon first, then yfinance as fallback, so a single
+    feed outage can't drop an index from the chart. If absolutely no FX feed
+    can be obtained for a given pair, the index is shown in its local
+    currency so it never disappears from the chart — and labelled as such.
     """
     start = (datetime.now() - pd.DateOffset(years=years)).date().isoformat()
 
     out = {}
+    note_local_ccy = []   # indices we had to leave in local currency
+
     for name, ticker in ROW_MARKETS.items():
         price = get_yf_series(ticker, start=start)
         if len(price) == 0:
             continue
 
-        fx_ticker = ROW_FX.get(name)
-        if fx_ticker is None:
-            out[name] = price  # already USD
+        fx_pair = ROW_FX.get(name)
+        if fx_pair is None:
+            out[name] = price                # SPX already USD
             continue
 
-        fx = get_yf_series(fx_ticker, start=start)
+        fx = _get_fx_with_fallback(fx_pair, start=start)
+
         if len(fx) == 0:
-            # FX missing -> skip rather than mix currencies
+            # Last-resort: keep the index visible in local currency. This
+            # is mildly misleading but better than silently dropping a
+            # major market like KOSPI from the dashboard.
+            out[f"{name} (local ccy)"] = price
+            note_local_ccy.append(name)
             continue
 
         usd_price = _to_usd(price, fx)
         if len(usd_price) > 0:
             out[name] = usd_price
+        else:
+            out[f"{name} (local ccy)"] = price
+            note_local_ccy.append(name)
 
     if not out:
         return pd.DataFrame()
@@ -239,4 +324,5 @@ def get_row_prices(years: int = 10) -> pd.DataFrame:
     df.columns = list(out.keys())
     bidx = pd.date_range(df.index.min(), df.index.max(), freq="B")
     df = df.reindex(bidx).ffill()
+    df.attrs["local_ccy_fallback"] = note_local_ccy
     return df
