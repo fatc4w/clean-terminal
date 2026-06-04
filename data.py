@@ -2,16 +2,13 @@
 from __future__ import annotations
 from datetime import datetime
 import pandas as pd
-import numpy as np
 import streamlit as st
 import yfinance as yf
 from fredapi import Fred
 
 
-# ---------------------------------------------------------------------------
-# FRED API key. Prefer Streamlit secrets, fall back to embedded key.
-# ---------------------------------------------------------------------------
 _DEFAULT_FRED_KEY = "7abe0fefb07c9a7fd7a310473e0de4eb"
+
 
 def _fred_key() -> str:
     try:
@@ -25,17 +22,21 @@ def _fred_client() -> Fred:
     return Fred(api_key=_fred_key())
 
 
-# ---------------------------------------------------------------------------
-# Universe definitions
-# ---------------------------------------------------------------------------
+# Headline indices for the returns table — now includes RoW markets too.
 MARKETS = {
-    "SPX":         "^GSPC",
-    "NDQ":         "^NDX",
-    "KOSPI":       "^KS11",
-    "Nikkei 225":  "^N225",
-    "CSI 300":     "000300.SS",
-    "STOXX 600":   "^STOXX",
-    "STI":         "^STI",
+    "SPX":           "^GSPC",
+    "NDQ":           "^NDX",
+    "KOSPI":         "^KS11",
+    "Nikkei 225":    "^N225",
+    "CSI 300":       "000300.SS",
+    "STOXX 600":     "^STOXX",
+    "STI":           "^STI",
+    "TAIEX":         "^TWII",
+    "NIFTY 50":      "^NSEI",
+    "IBOVESPA":      "^BVSP",
+    "TASI":          "^TASI.SR",
+    "JSE All Share": "^J203.JO",
+    "BMV IPC":       "^MXX",
 }
 
 CORR_ASSETS = {
@@ -47,6 +48,7 @@ CORR_ASSETS = {
     "DXY (Broad)":      {"source": "fred", "ticker": "DTWEXBGS"},
 }
 
+# RoW indices for the indexed-to-100 chart (SPX overlaid as reference)
 ROW_MARKETS = {
     "SPX (US)":      "^GSPC",
     "TAIEX":         "^TWII",
@@ -60,9 +62,6 @@ ROW_MARKETS = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Generic fetchers
-# ---------------------------------------------------------------------------
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_yf_series(ticker: str, period: str = "max", start: str | None = None) -> pd.Series:
     try:
@@ -114,9 +113,6 @@ def get_fred_series(series_id: str, start: str | None = None) -> pd.Series:
     return s
 
 
-# ---------------------------------------------------------------------------
-# Section-specific aggregators
-# ---------------------------------------------------------------------------
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_market_returns_table() -> pd.DataFrame:
     """1W / 1M / 3M / YTD percent returns for the headline equity indices."""
@@ -125,7 +121,6 @@ def get_market_returns_table() -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=["1W", "1M", "3M", "YTD"])
 
-    # rename to friendly names, keep declared order where available
     inv = {v: k for k, v in MARKETS.items()}
     df = df.rename(columns=inv)
     ordered = [k for k in MARKETS.keys() if k in df.columns]
@@ -165,7 +160,6 @@ def get_corr_assets_prices(years: int = 10) -> pd.DataFrame:
         cols[name] = s
     df = pd.concat(cols, axis=1).sort_index()
     df.columns = list(cols.keys())
-    # business-day grid + ffill so that yfinance & FRED line up
     bidx = pd.date_range(df.index.min(), df.index.max(), freq="B")
     df = df.reindex(bidx).ffill()
     return df
