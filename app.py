@@ -1,13 +1,6 @@
-"""Macro Markets Dashboard
-A single-page Streamlit app, n x 1 layout (one panel per row, with the
-Economic Conditions section laid out 2-up).
-
-Run locally:
-    streamlit run app.py
-"""
+"""Macro Markets Dashboard."""
 from __future__ import annotations
 from datetime import datetime
-import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -27,9 +20,6 @@ from utils import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Page setup + light styling
-# ---------------------------------------------------------------------------
 st.set_page_config(
     page_title="Macro Dashboard",
     layout="wide",
@@ -54,28 +44,29 @@ st.caption(f"As of {datetime.now().strftime('%Y-%m-%d %H:%M UTC')} • Data: yfi
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# helpers
 # ---------------------------------------------------------------------------
-WIN_STD = ["1Y", "5Y", "Max"]
-WIN_YTD = ["YTD", "1Y", "5Y", "Max"]
-PLOT_BG = "#0E1117"
+WIN_STD  = ["1Y", "5Y", "Max"]
+WIN_YTD  = ["YTD", "1Y", "5Y", "Max"]
+WIN_FULL = ["1W", "1M", "3M", "YTD", "1Y", "5Y", "Max"]
+PLOT_BG  = "#0E1117"
 
 
-def _window_start(end: pd.Timestamp, window: str, series_list=None) -> pd.Timestamp | None:
-    if window == "1Y":
-        return end - pd.DateOffset(years=1)
-    if window == "5Y":
-        return end - pd.DateOffset(years=5)
-    if window == "YTD":
-        return pd.Timestamp(year=end.year, month=1, day=1)
-    # Max
+def _window_start(end, window, series_list=None):
+    if window == "1W":  return end - pd.Timedelta(days=7)
+    if window == "1M":  return end - pd.DateOffset(months=1)
+    if window == "3M":  return end - pd.DateOffset(months=3)
+    if window == "1Y":  return end - pd.DateOffset(years=1)
+    if window == "5Y":  return end - pd.DateOffset(years=5)
+    if window == "YTD": return pd.Timestamp(year=end.year, month=1, day=1)
     if series_list is not None:
         return min(s.index[0] for s in series_list if len(s) > 0)
     return None
 
 
-def _line_fig(series_dict: dict, title: str, height: int = 380, y_fmt: str | None = None,
-              y_title: str | None = None) -> go.Figure:
+def _line_fig(series_dict, height=380, y_fmt=None, y_title=None):
+    """Reusable line chart. No in-figure title — caller renders a caption
+    above so the legend at y=1.04 doesn't clash with anything."""
     fig = go.Figure()
     for name, s in series_dict.items():
         if s is None or len(s) == 0:
@@ -86,12 +77,11 @@ def _line_fig(series_dict: dict, title: str, height: int = 380, y_fmt: str | Non
             hovertemplate=f"<b>{name}</b><br>%{{x|%Y-%m-%d}}<br>%{{y:.3f}}<extra></extra>",
         ))
     fig.update_layout(
-        title=dict(text=title, font=dict(size=14, color="#C9CCD0")),
         height=height,
         template="plotly_dark",
-        margin=dict(l=10, r=10, t=50, b=10),
+        margin=dict(l=10, r=10, t=60, b=10),
         hovermode="x unified",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        legend=dict(orientation="h", yanchor="bottom", y=1.04, xanchor="left", x=0),
         plot_bgcolor=PLOT_BG, paper_bgcolor=PLOT_BG,
         yaxis=dict(title=y_title) if y_title else dict(),
     )
@@ -100,10 +90,11 @@ def _line_fig(series_dict: dict, title: str, height: int = 380, y_fmt: str | Non
     return fig
 
 
-def fred_chart_block(series_dict: dict, title: str, key_prefix: str,
-                     include_ytd: bool = False, y_fmt: str | None = None,
-                     y_title: str | None = None, height: int = 380):
-    """Render a time-series chart with a 1Y/5Y/Max (or +YTD) window selector."""
+def fred_chart_block(series_dict, caption, key_prefix, include_ytd=False,
+                     y_fmt=None, y_title=None, height=380):
+    """Time-series chart with a 1Y/5Y/Max (or +YTD) window selector."""
+    if caption:
+        st.caption(caption)
     options = WIN_YTD if include_ytd else WIN_STD
     window = st.segmented_control(
         "Window", options=options, default=options[0], key=f"{key_prefix}_win",
@@ -113,14 +104,14 @@ def fred_chart_block(series_dict: dict, title: str, key_prefix: str,
 
     valid = [s for s in series_dict.values() if s is not None and len(s) > 0]
     if not valid:
-        st.warning(f"No data available for {title}")
+        st.warning("No data available")
         return
     end = max(s.index[-1] for s in valid)
     start = _window_start(end, window, series_list=valid)
 
     sliced = {n: (s.loc[s.index >= start] if start is not None else s)
               for n, s in series_dict.items()}
-    fig = _line_fig(sliced, title, height=height, y_fmt=y_fmt, y_title=y_title)
+    fig = _line_fig(sliced, height=height, y_fmt=y_fmt, y_title=y_title)
     st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_chart")
 
 
@@ -133,10 +124,12 @@ st.subheader("Global Equity Index Performance")
 with st.spinner("Fetching equity index data…"):
     returns_table = get_market_returns_table()
 
+
 def _color_perf(v):
     if pd.isna(v):
         return "color: #666;"
     return f"color: {'#26a69a' if v >= 0 else '#ef5350'}; font-weight: 600;"
+
 
 if returns_table.empty:
     st.warning("Could not load equity index returns.")
@@ -146,12 +139,15 @@ else:
         .format("{:+.2f}%", na_rep="–")
         .map(_color_perf)
     )
-    st.dataframe(styled, use_container_width=True, height=300)
+    # exact row height -> no empty trailing rows
+    n_rows = len(returns_table)
+    tbl_height = n_rows * 35 + 38
+    st.dataframe(styled, use_container_width=True, height=tbl_height)
 
-# ---- Correlation Matrix --------------------------------------------------
+
+# ---- Correlation Matrix (snapshot) + Pair time-series via dropdowns ----
 st.subheader("Cross-Asset Correlation Matrix")
-st.caption("EWMA correlation (λ = 0.94) of daily log returns over the last ~10 years. "
-           "Click any cell to view that pair's correlation history.")
+st.caption("EWMA correlation (λ = 0.94) of daily log returns over the last ~10 years.")
 
 with st.spinner("Computing EWMA correlations…"):
     corr_prices = get_corr_assets_prices(years=10)
@@ -177,85 +173,73 @@ heat_fig.update_layout(
     yaxis=dict(autorange="reversed"),
     plot_bgcolor=PLOT_BG, paper_bgcolor=PLOT_BG,
 )
+st.plotly_chart(heat_fig, use_container_width=True, key="corr_heatmap")
 
+st.markdown("**Pair Correlation Time Series**")
+st.caption("Pick any two assets to view the EWMA correlation history between them.")
 
-@st.dialog("Correlation History", width="large")
-def _show_corr_dialog(a: str, b: str, full_series: pd.Series):
-    st.markdown(f"### {a}  ⇄  {b}")
-    st.caption("EWMA correlation, λ = 0.94, daily log returns")
-    safe = (a + "_" + b).replace(" ", "").replace("(", "").replace(")", "")
-    window = st.segmented_control(
-        "Window", options=["1Y", "5Y", "Max"], default="1Y",
-        key=f"corr_win_{safe}",
+pcol1, pcol2, pcol3 = st.columns([2, 2, 2])
+with pcol1:
+    default_a = "SPX" if "SPX" in asset_list else asset_list[0]
+    asset_a = st.selectbox(
+        "Asset A", asset_list,
+        index=asset_list.index(default_a),
+        key="pair_a",
     )
-    if window is None:
-        window = "1Y"
-    end = full_series.index[-1]
-    if window == "1Y":
-        start = end - pd.DateOffset(years=1)
-    elif window == "5Y":
-        start = end - pd.DateOffset(years=5)
-    else:
-        start = full_series.index[0]
-    s = full_series.loc[full_series.index >= start]
+with pcol2:
+    others = [a for a in asset_list if a != asset_a]
+    default_b = "Gold" if "Gold" in others else others[0]
+    asset_b = st.selectbox(
+        "Asset B", others,
+        index=others.index(default_b),
+        key="pair_b",
+    )
+with pcol3:
+    pair_win = st.segmented_control(
+        "Window", options=["1Y", "5Y", "Max"], default="5Y", key="pair_win",
+    )
+    if pair_win is None:
+        pair_win = "5Y"
 
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=s.index, y=s.values, mode="lines",
+pair_series = (
+    corr_series_dict.get((asset_a, asset_b))
+    or corr_series_dict.get((asset_b, asset_a))
+)
+
+if pair_series is not None and len(pair_series) > 0:
+    end = pair_series.index[-1]
+    if pair_win == "1Y":
+        p_start = end - pd.DateOffset(years=1)
+    elif pair_win == "5Y":
+        p_start = end - pd.DateOffset(years=5)
+    else:
+        p_start = pair_series.index[0]
+    sf = pair_series.loc[pair_series.index >= p_start]
+
+    pair_fig = go.Figure()
+    pair_fig.add_trace(go.Scatter(
+        x=sf.index, y=sf.values, mode="lines",
         line=dict(color="#FF6B35", width=2),
         fill="tozeroy", fillcolor="rgba(255,107,53,0.10)",
         hovertemplate="%{x|%Y-%m-%d}<br>ρ = %{y:.3f}<extra></extra>",
     ))
-    fig.add_hline(y=0, line_dash="dash", line_color="#666", line_width=1)
-    fig.update_layout(
-        height=440, template="plotly_dark",
-        yaxis=dict(title="Correlation", range=[-1, 1], zeroline=False),
+    pair_fig.add_hline(y=0, line_dash="dash", line_color="#666", line_width=1)
+    pair_fig.update_layout(
+        height=400, template="plotly_dark",
+        yaxis=dict(title=f"ρ({asset_a}, {asset_b})", range=[-1, 1]),
         xaxis=dict(title=""),
-        margin=dict(l=10, r=10, t=20, b=10),
+        margin=dict(l=10, r=10, t=30, b=10),
         plot_bgcolor=PLOT_BG, paper_bgcolor=PLOT_BG,
     )
-    st.plotly_chart(fig, use_container_width=True, key=f"corr_dlg_chart_{safe}")
+    st.plotly_chart(pair_fig, use_container_width=True, key="pair_corr_chart")
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Current", f"{s.iloc[-1]:.3f}")
-    c2.metric(f"{window} Mean", f"{s.mean():.3f}")
-    c3.metric(f"{window} Min", f"{s.min():.3f}")
-    c4.metric(f"{window} Max", f"{s.max():.3f}")
-
-
-event = st.plotly_chart(
-    heat_fig,
-    on_select="rerun",
-    selection_mode=("points",),
-    key="corr_heatmap",
-    use_container_width=True,
-)
-
-# Open the dialog when the user clicks a *new* cell. We dedupe so that
-# downstream reruns (e.g. interacting with widgets elsewhere) don't reopen
-# a dialog the user already dismissed.
-def _selection_points(ev):
-    if ev is None:
-        return []
-    sel = getattr(ev, "selection", None)
-    if sel is None:
-        return []
-    if isinstance(sel, dict):
-        return sel.get("points", []) or []
-    return getattr(sel, "points", []) or []
-
-pts = _selection_points(event)
-if pts:
-    pt = pts[0]
-    a = pt.get("y")
-    b = pt.get("x")
-    if a and b and a != b:
-        new_sel = (a, b)
-        if st.session_state.get("_last_corr_click") != new_sel:
-            st.session_state["_last_corr_click"] = new_sel
-            series = corr_series_dict.get((a, b)) or corr_series_dict.get((b, a))
-            if series is not None and len(series) > 0:
-                _show_corr_dialog(a, b, series)
+    c1.metric("Current", f"{sf.iloc[-1]:.3f}")
+    c2.metric(f"{pair_win} Mean", f"{sf.mean():.3f}")
+    c3.metric(f"{pair_win} Min", f"{sf.min():.3f}")
+    c4.metric(f"{pair_win} Max", f"{sf.max():.3f}")
+else:
+    st.warning("No correlation data available for the selected pair.")
 
 
 # ---------------------------------------------------------------------------
@@ -264,47 +248,47 @@ if pts:
 st.header("2. Economic Conditions")
 
 with st.spinner("Loading FRED macro series…"):
-    y2  = get_fred_series("DGS2",     start="2000-01-01")
-    y5  = get_fred_series("DGS5",     start="2000-01-01")
-    y10 = get_fred_series("DGS10",    start="2000-01-01")
-    y30 = get_fred_series("DGS30",    start="2000-01-01")
-    pce = get_fred_series("PCEPILFE", start="1990-01-01")
-    mich = get_fred_series("MICH",    start="1990-01-01")
+    y2   = get_fred_series("DGS2",     start="2000-01-01")
+    y5   = get_fred_series("DGS5",     start="2000-01-01")
+    y10  = get_fred_series("DGS10",    start="2000-01-01")
+    y30  = get_fred_series("DGS30",    start="2000-01-01")
+    pce  = get_fred_series("PCEPILFE", start="1990-01-01")
+    mich = get_fred_series("MICH",     start="1990-01-01")
 
-# Row 1: yields | PCE
+# Core PCE YoY % change — PCEPILFE is monthly, so pct_change(12) is YoY.
+pce_yoy = (pce.pct_change(periods=12).dropna() * 100) if len(pce) > 12 else pd.Series(dtype=float)
+
 c1, c2 = st.columns(2, gap="medium")
 with c1:
     st.markdown("**US Treasury Yields**")
     fred_chart_block(
         {"2Y": y2, "5Y": y5, "10Y": y10, "30Y": y30},
-        title="US Treasury Yields (%)",
+        caption="US Treasury Yields (%)",
         key_prefix="ust",
         y_fmt=".2f", y_title="Yield (%)",
         height=380,
     )
 with c2:
-    st.markdown("**Core PCE Price Index**")
+    st.markdown("**Core PCE YoY**")
     fred_chart_block(
-        {"Core PCE": pce},
-        title="PCEPILFE — PCE ex Food & Energy (Index, 2017=100)",
+        {"Core PCE YoY (%)": pce_yoy},
+        caption="PCEPILFE — Core PCE Price Index, Year-over-Year % Change",
         key_prefix="pce",
-        y_fmt=".1f", y_title="Index",
+        y_fmt=".2f", y_title="YoY (%)",
         height=380,
     )
 
-# Row 2: Michigan inflation expectations | (empty for symmetry)
 c1, c2 = st.columns(2, gap="medium")
 with c1:
     st.markdown("**Inflation Expectations**")
     fred_chart_block(
         {"UMich 1Y Inflation Expectation": mich},
-        title="MICH — Univ. of Michigan 1Y Inflation Expectation (%)",
+        caption="MICH — Univ. of Michigan 1Y Inflation Expectation (%)",
         key_prefix="mich",
         y_fmt=".1f", y_title="%",
         height=380,
     )
 with c2:
-    st.markdown("&nbsp;", unsafe_allow_html=True)
     st.empty()
 
 
@@ -330,23 +314,20 @@ fred_chart_block(
         "ON RRP Award Rate": onrrp,
         "IORB": iorb,
     },
-    title="Money Market Rates (%)",
+    caption="Money Market Rates (%)",
     key_prefix="mmr",
     y_fmt=".2f", y_title="Rate (%)",
     height=420,
 )
 
 st.subheader("Money Market Spreads")
-# Smooth out missingness by carrying forward, then take spreads in bps.
 if any(len(s) for s in (sofr, effr, onrrp)):
-    start_idx = min(
-        s.index.min() for s in (sofr, effr, onrrp) if len(s) > 0
-    )
+    start_idx = min(s.index.min() for s in (sofr, effr, onrrp) if len(s) > 0)
     daily_idx = pd.date_range(start=start_idx, end=pd.Timestamp.today(), freq="D")
     sofr_d  = sofr.reindex(daily_idx).ffill()
     effr_d  = effr.reindex(daily_idx).ffill()
     onrrp_d = onrrp.reindex(daily_idx).ffill()
-    spread_se = ((sofr_d - effr_d) * 100).dropna()    # bps
+    spread_se = ((sofr_d - effr_d) * 100).dropna()   # bps
     spread_so = ((sofr_d - onrrp_d) * 100).dropna()  # bps
 else:
     spread_se = pd.Series(dtype=float)
@@ -354,20 +335,38 @@ else:
 
 fred_chart_block(
     {"SOFR − EFFR (bps)": spread_se, "SOFR − ON RRP (bps)": spread_so},
-    title="Money Market Spreads (basis points)",
+    caption="Money Market Spreads (basis points)",
     key_prefix="mms",
     y_fmt=".0f", y_title="Spread (bps)",
     height=380,
 )
 
+# ---- NFCI with a custom range slider (default = trailing 5Y) ----
 st.subheader("Chicago Fed National Financial Conditions Index")
-fred_chart_block(
-    {"NFCI": nfci},
-    title="NFCI (positive = tighter than average, negative = looser)",
-    key_prefix="nfci",
-    y_fmt=".2f", y_title="Index",
-    height=380,
-)
+st.caption("NFCI (positive = tighter than average, negative = looser). "
+           "Drag the slider to calibrate the window — default opens at the trailing 5 years.")
+
+nfci_valid = nfci.dropna()
+if len(nfci_valid) == 0:
+    st.warning("No NFCI data available.")
+else:
+    min_d = nfci_valid.index.min().date()
+    max_d = nfci_valid.index.max().date()
+    default_start = (nfci_valid.index.max() - pd.DateOffset(years=5)).date()
+    if default_start < min_d:
+        default_start = min_d
+    sel = st.slider(
+        "Window",
+        min_value=min_d,
+        max_value=max_d,
+        value=(default_start, max_d),
+        format="YYYY-MM-DD",
+        key="nfci_slider",
+    )
+    s_start, s_end = sel
+    sliced_nfci = nfci_valid.loc[str(s_start):str(s_end)]
+    nfci_fig = _line_fig({"NFCI": sliced_nfci}, height=400, y_fmt=".2f", y_title="Index")
+    st.plotly_chart(nfci_fig, use_container_width=True, key="nfci_chart")
 
 
 # ---------------------------------------------------------------------------
@@ -379,38 +378,25 @@ st.subheader("Equity Market Performance (Indexed to 100)")
 with st.spinner("Loading global equity index data…"):
     row_prices = get_row_prices(years=10)
 
-window = st.segmented_control(
-    "Window", options=WIN_YTD, default="YTD", key="row_win",
+row_window = st.segmented_control(
+    "Window", options=WIN_FULL, default="YTD", key="row_win",
 )
-if window is None:
-    window = "YTD"
+if row_window is None:
+    row_window = "YTD"
 
 if row_prices.empty:
     st.warning("Could not load global equity prices.")
 else:
     end = row_prices.index[-1]
-    if window == "YTD":
-        start = pd.Timestamp(year=end.year, month=1, day=1)
-    elif window == "1Y":
-        start = end - pd.DateOffset(years=1)
-    elif window == "5Y":
-        start = end - pd.DateOffset(years=5)
-    else:
-        start = row_prices.index[0]
+    valid_cols = [row_prices[c].dropna() for c in row_prices.columns]
+    start = _window_start(end, row_window, series_list=valid_cols)
 
     sliced = row_prices.loc[row_prices.index >= start].copy().ffill().dropna(how="all")
     indexed = index_to_100(sliced)
 
-    # Distinct colors for the RoW lines, SPX rendered last in bold white.
     palette = [
-        "#42A5F5",  # blue
-        "#AB47BC",  # purple
-        "#FFCA28",  # amber
-        "#26C6DA",  # cyan
-        "#EF5350",  # red
-        "#66BB6A",  # green
-        "#FF7043",  # deep orange
-        "#EC407A",  # pink
+        "#42A5F5", "#AB47BC", "#FFCA28", "#26C6DA",
+        "#EF5350", "#66BB6A", "#FF7043", "#EC407A",
     ]
     non_spx = [c for c in indexed.columns if c != "SPX (US)"]
 
@@ -424,7 +410,6 @@ else:
             opacity=0.45,
             hovertemplate=f"<b>{name}</b><br>%{{x|%Y-%m-%d}}<br>%{{y:.1f}}<extra></extra>",
         ))
-    # SPX last so it sits on top, bold + fully opaque
     if "SPX (US)" in indexed.columns:
         fig.add_trace(go.Scatter(
             x=indexed.index, y=indexed["SPX (US)"],
@@ -436,28 +421,24 @@ else:
 
     fig.update_layout(
         height=540, template="plotly_dark",
-        title=dict(text=f"Equity Indices Indexed to 100 — {window} window",
-                   font=dict(size=14)),
-        margin=dict(l=10, r=10, t=50, b=10),
+        margin=dict(l=10, r=10, t=60, b=10),
         hovermode="x unified",
         legend=dict(
-            orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
+            orientation="h", yanchor="bottom", y=1.04, xanchor="left", x=0,
             itemclick="toggleothers", itemdoubleclick="toggle",
         ),
         plot_bgcolor=PLOT_BG, paper_bgcolor=PLOT_BG,
         yaxis=dict(title="Indexed Value (start = 100)"),
     )
-    st.plotly_chart(fig, use_container_width=True, key="row_chart")
     st.caption(
-        "SPX rendered bold/opaque as US reference. The RoW lines are kept translucent so the chart "
-        "stays readable; **single-click a legend entry to isolate that index**, double-click to "
-        "restore all. Hover uses unified x-axis tooltips so you can compare all values at a given date."
+        f"Indexed to 100 from start of {row_window} window. SPX rendered bold/opaque as US reference. "
+        f"Single-click a legend entry to isolate one index; double-click to restore all."
     )
+    st.plotly_chart(fig, use_container_width=True, key="row_chart")
 
 st.markdown("---")
 st.caption(
-    "Methodology notes: index returns from yfinance (Adj Close where available, else Close). "
-    "Correlation panel: daily log returns, ~10y window, EWMA with λ = 0.94. "
-    "DXY uses FRED's DTWEXBGS (Nominal Broad U.S. Dollar Index). "
-    "10Y UST price proxy is the front-month 10Y Treasury Note futures (ZN=F)."
+    "Methodology: index returns from yfinance (Adj Close where available). "
+    "Correlations: daily log returns, ~10y window, EWMA λ = 0.94. "
+    "Core PCE = YoY % change of PCEPILFE; DXY = FRED DTWEXBGS; 10Y UST price proxy = ZN=F front-month futures."
 )
