@@ -22,7 +22,8 @@ def _fred_client() -> Fred:
     return Fred(api_key=_fred_key())
 
 
-# Headline indices for the returns table — now includes RoW markets too.
+# Headline indices for the returns table (local-currency price returns —
+# this is the convention for the headline returns panel).
 MARKETS = {
     "SPX":           "^GSPC",
     "NDQ":           "^NDX",
@@ -48,7 +49,7 @@ CORR_ASSETS = {
     "DXY (Broad)":      {"source": "fred", "ticker": "DTWEXBGS"},
 }
 
-# RoW indices for the indexed-to-100 chart (SPX overlaid as reference)
+# RoW indices for the indexed-to-100 chart. SPX overlaid as reference.
 ROW_MARKETS = {
     "SPX (US)":      "^GSPC",
     "TAIEX":         "^TWII",
@@ -59,6 +60,21 @@ ROW_MARKETS = {
     "TASI":          "^TASI.SR",
     "JSE All Share": "^J203.JO",
     "BMV IPC":       "^MXX",
+}
+
+# FX rates used to convert each RoW local-currency price into USD.
+# Convention: tickers are USDxxx=X (= units of local currency per 1 USD),
+# so USD_price = local_price / fx_rate.
+ROW_FX = {
+    "SPX (US)":      None,         # already USD
+    "TAIEX":         "TWD=X",      # USD/TWD
+    "CSI 300":       "CNY=X",      # USD/CNY
+    "KOSPI":         "KRW=X",      # USD/KRW
+    "NIFTY 50":      "INR=X",      # USD/INR
+    "IBOVESPA":      "BRL=X",      # USD/BRL
+    "TASI":          "SAR=X",      # USD/SAR
+    "JSE All Share": "ZAR=X",      # USD/ZAR
+    "BMV IPC":       "MXN=X",      # USD/MXN
 }
 
 
@@ -115,7 +131,7 @@ def get_fred_series(series_id: str, start: str | None = None) -> pd.Series:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_market_returns_table() -> pd.DataFrame:
-    """1W / 1M / 3M / YTD percent returns for the headline equity indices."""
+    """1W / 1M / 3M / YTD price returns (LOCAL currency)."""
     tickers = list(MARKETS.values())
     df = get_yf_multi(tickers, period="2y")
     if df.empty:
@@ -165,15 +181,62 @@ def get_corr_assets_prices(years: int = 10) -> pd.DataFrame:
     return df
 
 
+def _to_usd(local_price: pd.Series, fx_usd_per_local_inv: pd.Series) -> pd.Series:
+    """Convert a local-currency price series to USD.
+
+    `fx_usd_per_local_inv` is the USD/xxx series (units of local currency
+    per 1 USD), i.e. the yfinance xxx=X quote. So USD_price = local / fx.
+    FX is forward-filled onto the equity calendar to handle different
+    trading hours / holidays cleanly.
+    """
+    if len(fx_usd_per_local_inv) == 0:
+        return pd.Series(dtype=float)
+    joined_idx = local_price.index.union(fx_usd_per_local_inv.index).sort_values()
+    fx_aligned = (
+        fx_usd_per_local_inv.reindex(joined_idx)
+        .ffill()
+        .reindex(local_price.index)
+    )
+    usd = local_price / fx_aligned
+    return usd.dropna()
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_row_prices(years: int = 10) -> pd.DataFrame:
+    """RoW equity indices converted to USD terms, aligned on a business-day grid.
+
+    SPX is left as-is (already USD). Every other index is divided by its
+    matching USD/xxx FX series so the resulting line measures what a USD
+    investor actually earned (price + FX). If an FX series fails to load,
+    that index is dropped from the chart rather than shown in mixed units.
+    """
     start = (datetime.now() - pd.DateOffset(years=years)).date().isoformat()
-    tickers = list(ROW_MARKETS.values())
-    df = get_yf_multi(tickers, start=start)
-    inv = {v: k for k, v in ROW_MARKETS.items()}
-    df = df.rename(columns=inv)
-    ordered = [k for k in ROW_MARKETS.keys() if k in df.columns]
-    df = df[ordered]
+
+    out = {}
+    for name, ticker in ROW_MARKETS.items():
+        price = get_yf_series(ticker, start=start)
+        if len(price) == 0:
+            continue
+
+        fx_ticker = ROW_FX.get(name)
+        if fx_ticker is None:
+            out[name] = price  # already USD
+            continue
+
+        fx = get_yf_series(fx_ticker, start=start)
+        if len(fx) == 0:
+            # FX missing -> skip rather than mix currencies
+            continue
+
+        usd_price = _to_usd(price, fx)
+        if len(usd_price) > 0:
+            out[name] = usd_price
+
+    if not out:
+        return pd.DataFrame()
+
+    df = pd.concat(out, axis=1).sort_index()
+    df.columns = list(out.keys())
     bidx = pd.date_range(df.index.min(), df.index.max(), freq="B")
     df = df.reindex(bidx).ffill()
     return df
