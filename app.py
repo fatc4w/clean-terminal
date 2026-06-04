@@ -117,7 +117,7 @@ def fred_chart_block(series_dict, caption, key_prefix, include_ytd=False,
 # ---------------------------------------------------------------------------
 st.header("1. Financial Markets")
 
-st.subheader("Global Equity Index Performance")
+st.subheader("Global Equity Index Performance (local currency)")
 with st.spinner("Fetching equity index data…"):
     returns_table = get_market_returns_table()
 
@@ -197,7 +197,6 @@ with pcol3:
     if pair_win is None:
         pair_win = "5Y"
 
-# Explicit None check — avoids the ambiguous Series truth-value error
 _s1 = corr_series_dict.get((asset_a, asset_b))
 _s2 = corr_series_dict.get((asset_b, asset_a))
 pair_series = _s1 if _s1 is not None else _s2
@@ -336,7 +335,6 @@ fred_chart_block(
     height=380,
 )
 
-# ---- NFCI with date-range slider (default = trailing 5Y) ----
 st.subheader("Chicago Fed National Financial Conditions Index")
 st.caption("NFCI (positive = tighter than average, negative = looser). "
            "Drag the slider to set your window — defaults to trailing 5 years.")
@@ -365,12 +363,17 @@ else:
 
 
 # ---------------------------------------------------------------------------
-# 4. US vs ROW
+# 4. US vs ROW  (USD-denominated)
 # ---------------------------------------------------------------------------
 st.header("4. US vs Rest of World")
-st.subheader("Equity Market Performance (Indexed to 100)")
+st.subheader("Equity Market Performance — USD terms (Indexed to 100)")
+st.caption(
+    "All RoW indices have been converted from their local currency to USD using "
+    "spot FX (yfinance USD/xxx) before indexing, so every line measures the "
+    "return a USD-based investor would have earned (price + FX)."
+)
 
-with st.spinner("Loading global equity index data…"):
+with st.spinner("Loading global equity index data (with FX conversion)…"):
     row_prices = get_row_prices(years=10)
 
 row_window = st.segmented_control(
@@ -403,7 +406,7 @@ else:
             name=name, mode="lines",
             line=dict(color=color, width=1.7),
             opacity=0.45,
-            hovertemplate=f"<b>{name}</b><br>%{{x|%Y-%m-%d}}<br>%{{y:.1f}}<extra></extra>",
+            hovertemplate=f"<b>{name}</b> (USD)<br>%{{x|%Y-%m-%d}}<br>%{{y:.1f}}<extra></extra>",
         ))
     if "SPX (US)" in indexed.columns:
         fig.add_trace(go.Scatter(
@@ -423,10 +426,10 @@ else:
             itemclick="toggleothers", itemdoubleclick="toggle",
         ),
         plot_bgcolor=PLOT_BG, paper_bgcolor=PLOT_BG,
-        yaxis=dict(title="Indexed Value (start = 100)"),
+        yaxis=dict(title="USD Indexed Value (start = 100)"),
     )
     st.caption(
-        f"Indexed to 100 from start of {row_window} window. SPX bold/opaque as US reference. "
+        f"USD-indexed to 100 from start of {row_window} window. SPX bold/opaque as US reference. "
         f"Single-click a legend entry to isolate one index; double-click to restore all."
     )
     st.plotly_chart(fig, width="stretch", key="row_chart")
@@ -434,6 +437,8 @@ else:
 st.markdown("---")
 st.caption(
     "Methodology: index returns from yfinance (Adj Close where available). "
+    "Section 1 returns table is in local currency. Section 4 RoW indices are converted "
+    "to USD (price ÷ USD/xxx spot) before indexing. "
     "Correlations: daily log returns, ~10y window, EWMA λ = 0.94. "
-    "Core PCE = YoY % change of PCEPILFE; DXY = FRED DTWEXBGS; 10Y UST price proxy = ZN=F front-month futures."
+    "Core PCE = YoY % change of PCEPILFE; DXY = FRED DTWEXBGS; 10Y UST price proxy = ZN=F."
 )
