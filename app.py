@@ -65,8 +65,6 @@ def _window_start(end, window, series_list=None):
 
 
 def _line_fig(series_dict, height=380, y_fmt=None, y_title=None):
-    """Reusable line chart. No in-figure title — caller renders a caption
-    above so the legend at y=1.04 doesn't clash with anything."""
     fig = go.Figure()
     for name, s in series_dict.items():
         if s is None or len(s) == 0:
@@ -92,7 +90,6 @@ def _line_fig(series_dict, height=380, y_fmt=None, y_title=None):
 
 def fred_chart_block(series_dict, caption, key_prefix, include_ytd=False,
                      y_fmt=None, y_title=None, height=380):
-    """Time-series chart with a 1Y/5Y/Max (or +YTD) window selector."""
     if caption:
         st.caption(caption)
     options = WIN_YTD if include_ytd else WIN_STD
@@ -112,7 +109,7 @@ def fred_chart_block(series_dict, caption, key_prefix, include_ytd=False,
     sliced = {n: (s.loc[s.index >= start] if start is not None else s)
               for n, s in series_dict.items()}
     fig = _line_fig(sliced, height=height, y_fmt=y_fmt, y_title=y_title)
-    st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_chart")
+    st.plotly_chart(fig, width="stretch", key=f"{key_prefix}_chart")
 
 
 # ---------------------------------------------------------------------------
@@ -139,13 +136,12 @@ else:
         .format("{:+.2f}%", na_rep="–")
         .map(_color_perf)
     )
-    # exact row height -> no empty trailing rows
     n_rows = len(returns_table)
     tbl_height = n_rows * 35 + 38
-    st.dataframe(styled, use_container_width=True, height=tbl_height)
+    st.dataframe(styled, width="stretch", height=tbl_height)
 
 
-# ---- Correlation Matrix (snapshot) + Pair time-series via dropdowns ----
+# ---- Correlation Matrix + Pair time-series via dropdowns ----
 st.subheader("Cross-Asset Correlation Matrix")
 st.caption("EWMA correlation (λ = 0.94) of daily log returns over the last ~10 years.")
 
@@ -173,7 +169,7 @@ heat_fig.update_layout(
     yaxis=dict(autorange="reversed"),
     plot_bgcolor=PLOT_BG, paper_bgcolor=PLOT_BG,
 )
-st.plotly_chart(heat_fig, use_container_width=True, key="corr_heatmap")
+st.plotly_chart(heat_fig, width="stretch", key="corr_heatmap")
 
 st.markdown("**Pair Correlation Time Series**")
 st.caption("Pick any two assets to view the EWMA correlation history between them.")
@@ -201,10 +197,10 @@ with pcol3:
     if pair_win is None:
         pair_win = "5Y"
 
-pair_series = (
-    corr_series_dict.get((asset_a, asset_b))
-    or corr_series_dict.get((asset_b, asset_a))
-)
+# Explicit None check — avoids the ambiguous Series truth-value error
+_s1 = corr_series_dict.get((asset_a, asset_b))
+_s2 = corr_series_dict.get((asset_b, asset_a))
+pair_series = _s1 if _s1 is not None else _s2
 
 if pair_series is not None and len(pair_series) > 0:
     end = pair_series.index[-1]
@@ -226,12 +222,12 @@ if pair_series is not None and len(pair_series) > 0:
     pair_fig.add_hline(y=0, line_dash="dash", line_color="#666", line_width=1)
     pair_fig.update_layout(
         height=400, template="plotly_dark",
-        yaxis=dict(title=f"ρ({asset_a}, {asset_b})", range=[-1, 1]),
+        yaxis=dict(title=f"ρ  {asset_a} / {asset_b}", range=[-1, 1]),
         xaxis=dict(title=""),
         margin=dict(l=10, r=10, t=30, b=10),
         plot_bgcolor=PLOT_BG, paper_bgcolor=PLOT_BG,
     )
-    st.plotly_chart(pair_fig, use_container_width=True, key="pair_corr_chart")
+    st.plotly_chart(pair_fig, width="stretch", key="pair_corr_chart")
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Current", f"{sf.iloc[-1]:.3f}")
@@ -255,7 +251,6 @@ with st.spinner("Loading FRED macro series…"):
     pce  = get_fred_series("PCEPILFE", start="1990-01-01")
     mich = get_fred_series("MICH",     start="1990-01-01")
 
-# Core PCE YoY % change — PCEPILFE is monthly, so pct_change(12) is YoY.
 pce_yoy = (pce.pct_change(periods=12).dropna() * 100) if len(pce) > 12 else pd.Series(dtype=float)
 
 c1, c2 = st.columns(2, gap="medium")
@@ -327,8 +322,8 @@ if any(len(s) for s in (sofr, effr, onrrp)):
     sofr_d  = sofr.reindex(daily_idx).ffill()
     effr_d  = effr.reindex(daily_idx).ffill()
     onrrp_d = onrrp.reindex(daily_idx).ffill()
-    spread_se = ((sofr_d - effr_d) * 100).dropna()   # bps
-    spread_so = ((sofr_d - onrrp_d) * 100).dropna()  # bps
+    spread_se = ((sofr_d - effr_d) * 100).dropna()
+    spread_so = ((sofr_d - onrrp_d) * 100).dropna()
 else:
     spread_se = pd.Series(dtype=float)
     spread_so = pd.Series(dtype=float)
@@ -341,10 +336,10 @@ fred_chart_block(
     height=380,
 )
 
-# ---- NFCI with a custom range slider (default = trailing 5Y) ----
+# ---- NFCI with date-range slider (default = trailing 5Y) ----
 st.subheader("Chicago Fed National Financial Conditions Index")
 st.caption("NFCI (positive = tighter than average, negative = looser). "
-           "Drag the slider to calibrate the window — default opens at the trailing 5 years.")
+           "Drag the slider to set your window — defaults to trailing 5 years.")
 
 nfci_valid = nfci.dropna()
 if len(nfci_valid) == 0:
@@ -366,7 +361,7 @@ else:
     s_start, s_end = sel
     sliced_nfci = nfci_valid.loc[str(s_start):str(s_end)]
     nfci_fig = _line_fig({"NFCI": sliced_nfci}, height=400, y_fmt=".2f", y_title="Index")
-    st.plotly_chart(nfci_fig, use_container_width=True, key="nfci_chart")
+    st.plotly_chart(nfci_fig, width="stretch", key="nfci_chart")
 
 
 # ---------------------------------------------------------------------------
@@ -388,7 +383,7 @@ if row_prices.empty:
     st.warning("Could not load global equity prices.")
 else:
     end = row_prices.index[-1]
-    valid_cols = [row_prices[c].dropna() for c in row_prices.columns]
+    valid_cols = [row_prices[c].dropna() for c in row_prices.columns if len(row_prices[c].dropna()) > 0]
     start = _window_start(end, row_window, series_list=valid_cols)
 
     sliced = row_prices.loc[row_prices.index >= start].copy().ffill().dropna(how="all")
@@ -431,10 +426,10 @@ else:
         yaxis=dict(title="Indexed Value (start = 100)"),
     )
     st.caption(
-        f"Indexed to 100 from start of {row_window} window. SPX rendered bold/opaque as US reference. "
+        f"Indexed to 100 from start of {row_window} window. SPX bold/opaque as US reference. "
         f"Single-click a legend entry to isolate one index; double-click to restore all."
     )
-    st.plotly_chart(fig, use_container_width=True, key="row_chart")
+    st.plotly_chart(fig, width="stretch", key="row_chart")
 
 st.markdown("---")
 st.caption(
