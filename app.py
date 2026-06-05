@@ -40,7 +40,7 @@ st.markdown(
 )
 
 st.title("Macro Markets Dashboard")
-st.caption(f"As of {datetime.now().strftime('%Y-%m-%d %H:%M UTC')} • Data: yfinance + FRED")
+st.caption(f"As of {datetime.now().strftime('%Y-%m-%d %H:%M UTC')} • Data: yfinance + FRED + Polygon")
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +88,29 @@ def _line_fig(series_dict, height=380, y_fmt=None, y_title=None):
     return fig
 
 
+def _bar_fig(series: pd.Series, height=380, y_title=None, color_pos="#26a69a", color_neg="#ef5350"):
+    """Bar chart with green/red colouring for positive/negative values."""
+    colors = [color_pos if v >= 0 else color_neg for v in series.values]
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=series.index, y=series.values,
+        marker_color=colors,
+        hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.0f}<extra></extra>",
+    ))
+    fig.add_hline(y=0, line_color="#555", line_width=1)
+    fig.update_layout(
+        height=height,
+        template="plotly_dark",
+        margin=dict(l=10, r=10, t=60, b=10),
+        hovermode="x",
+        legend=dict(orientation="h", yanchor="bottom", y=1.04, xanchor="left", x=0),
+        plot_bgcolor=PLOT_BG, paper_bgcolor=PLOT_BG,
+        yaxis=dict(title=y_title) if y_title else dict(),
+        bargap=0.15,
+    )
+    return fig
+
+
 def fred_chart_block(series_dict, caption, key_prefix, include_ytd=False,
                      y_fmt=None, y_title=None, height=380):
     if caption:
@@ -109,6 +132,29 @@ def fred_chart_block(series_dict, caption, key_prefix, include_ytd=False,
     sliced = {n: (s.loc[s.index >= start] if start is not None else s)
               for n, s in series_dict.items()}
     fig = _line_fig(sliced, height=height, y_fmt=y_fmt, y_title=y_title)
+    st.plotly_chart(fig, width="stretch", key=f"{key_prefix}_chart")
+
+
+def fred_bar_block(series: pd.Series, caption: str, key_prefix: str,
+                   include_ytd=False, y_title=None, height=380):
+    """Bar chart block with the same window-selector pattern."""
+    if caption:
+        st.caption(caption)
+    options = WIN_YTD if include_ytd else WIN_STD
+    window = st.segmented_control(
+        "Window", options=options, default=options[0], key=f"{key_prefix}_win",
+    )
+    if window is None:
+        window = options[0]
+
+    if series is None or len(series) == 0:
+        st.warning("No data available")
+        return
+    end = series.index[-1]
+    start = _window_start(end, window, series_list=[series])
+    sliced = series.loc[series.index >= start] if start is not None else series
+
+    fig = _bar_fig(sliced, height=height, y_title=y_title)
     st.plotly_chart(fig, width="stretch", key=f"{key_prefix}_chart")
 
 
@@ -243,15 +289,19 @@ else:
 st.header("2. Economic Conditions")
 
 with st.spinner("Loading FRED macro series…"):
-    y2   = get_fred_series("DGS2",     start="2000-01-01")
-    y5   = get_fred_series("DGS5",     start="2000-01-01")
-    y10  = get_fred_series("DGS10",    start="2000-01-01")
-    y30  = get_fred_series("DGS30",    start="2000-01-01")
-    pce  = get_fred_series("PCEPILFE", start="1990-01-01")
-    mich = get_fred_series("MICH",     start="1990-01-01")
+    y2      = get_fred_series("DGS2",     start="2000-01-01")
+    y5      = get_fred_series("DGS5",     start="2000-01-01")
+    y10     = get_fred_series("DGS10",    start="2000-01-01")
+    y30     = get_fred_series("DGS30",    start="2000-01-01")
+    pce     = get_fred_series("PCEPILFE", start="1990-01-01")
+    mich    = get_fred_series("MICH",     start="1990-01-01")
+    payems  = get_fred_series("PAYEMS",   start="1990-01-01")
 
-pce_yoy = (pce.pct_change(periods=12).dropna() * 100) if len(pce) > 12 else pd.Series(dtype=float)
+pce_yoy    = (pce.pct_change(periods=12).dropna() * 100) if len(pce) > 12 else pd.Series(dtype=float)
+# MoM change: PAYEMS is in thousands, diff(1) gives change in thousands of jobs added/lost.
+payems_mom = payems.diff(1).dropna() if len(payems) > 1 else pd.Series(dtype=float)
 
+# Row 1: Treasury yields | Core PCE YoY
 c1, c2 = st.columns(2, gap="medium")
 with c1:
     st.markdown("**US Treasury Yields**")
@@ -272,6 +322,7 @@ with c2:
         height=380,
     )
 
+# Row 2: UMich inflation expectations | Nonfarm payrolls MoM
 c1, c2 = st.columns(2, gap="medium")
 with c1:
     st.markdown("**Inflation Expectations**")
@@ -283,7 +334,14 @@ with c1:
         height=380,
     )
 with c2:
-    st.empty()
+    st.markdown("**Nonfarm Payrolls — MoM Change**")
+    fred_bar_block(
+        payems_mom,
+        caption="PAYEMS — All Employees, Total Nonfarm: Monthly Change (thousands)",
+        key_prefix="payems",
+        y_title="Jobs Added (thousands)",
+        height=380,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -368,9 +426,8 @@ else:
 st.header("4. US vs Rest of World")
 st.subheader("Equity Market Performance — USD terms (Indexed to 100)")
 st.caption(
-    "All RoW indices have been converted from their local currency to USD using "
-    "spot FX (yfinance USD/xxx) before indexing, so every line measures the "
-    "return a USD-based investor would have earned (price + FX)."
+    "All RoW indices converted from local currency to USD (Polygon FX, yfinance fallback) "
+    "before indexing. Every line measures what a USD-based investor earned (price + FX)."
 )
 
 with st.spinner("Loading global equity index data (with FX conversion)…"):
@@ -437,8 +494,7 @@ else:
 st.markdown("---")
 st.caption(
     "Methodology: index returns from yfinance (Adj Close where available). "
-    "Section 1 returns table is in local currency. Section 4 RoW indices are converted "
-    "to USD (price ÷ USD/xxx spot) before indexing. "
-    "Correlations: daily log returns, ~10y window, EWMA λ = 0.94. "
-    "Core PCE = YoY % change of PCEPILFE; DXY = FRED DTWEXBGS; 10Y UST price proxy = ZN=F."
+    "Section 1 returns table is local currency. Section 4 RoW indices converted to USD via "
+    "Polygon FX (yfinance fallback). Correlations: daily log returns, ~10y, EWMA λ = 0.94. "
+    "Core PCE = YoY % Δ of PCEPILFE. DXY = FRED DTWEXBGS. 10Y UST price proxy = ZN=F."
 )
