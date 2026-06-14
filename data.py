@@ -1,11 +1,15 @@
 """Data fetching: yfinance (equities) + FRED (macro) + Polygon.io (FX)."""
 from __future__ import annotations
 from datetime import datetime
+import io
+from urllib.parse import urljoin
 import pandas as pd
 import requests
 import streamlit as st
 import yfinance as yf
+from bs4 import BeautifulSoup
 from fredapi import Fred
+import openpyxl
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +278,49 @@ def _to_usd(local_price: pd.Series, fx_usd_base: pd.Series) -> pd.Series:
     )
     usd = local_price / fx_aligned
     return usd.dropna()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_wei_data() -> pd.Series:
+    """Fetch Dallas Fed Weekly Economic Index by scraping the WEI page for the xlsx link."""
+    _BASE = "https://www.dallasfed.org"
+    _PAGE = f"{_BASE}/research/wei"
+    _HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        )
+    }
+    try:
+        page_resp = requests.get(_PAGE, headers=_HEADERS, timeout=30)
+        page_resp.raise_for_status()
+        soup = BeautifulSoup(page_resp.text, "html.parser")
+        anchor = soup.find("a", href=lambda h: h and h.lower().endswith(".xlsx"))
+        if anchor is None:
+            return pd.Series(dtype=float, name="WEI")
+        xlsx_href = anchor["href"]
+        xlsx_url = xlsx_href if xlsx_href.startswith("http") else urljoin(_BASE, xlsx_href)
+
+        file_resp = requests.get(xlsx_url, headers=_HEADERS, timeout=60)
+        file_resp.raise_for_status()
+        file_bytes = io.BytesIO(file_resp.content)
+
+        wb = openpyxl.load_workbook(file_bytes, read_only=True, data_only=True)
+        if "2008-current" not in wb.sheetnames:
+            return pd.Series(dtype=float, name="WEI")
+
+        ws = wb["2008-current"]
+        rows = list(ws.iter_rows(max_col=2, values_only=True))
+        df = pd.DataFrame(rows[1:], columns=["Date", "WEI"])
+        df["Date"] = pd.to_datetime(df["Date"])
+        df["WEI"] = pd.to_numeric(df["WEI"], errors="coerce")
+        df = df.dropna(subset=["Date", "WEI"]).sort_values("Date").reset_index(drop=True)
+        s = df.set_index("Date")["WEI"]
+        s.name = "WEI"
+        return s
+    except Exception:
+        return pd.Series(dtype=float, name="WEI")
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
