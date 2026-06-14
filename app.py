@@ -491,10 +491,109 @@ else:
     )
     st.plotly_chart(fig, width="stretch", key="row_chart")
 
+st.subheader("Policy Rates, Overnight Rates & Inflation — Major DM ex-US")
+st.caption(
+    "Each chart pairs a region's policy rate, its risk-free overnight benchmark, and headline "
+    "inflation. Note: Japan's TONA is calculated from uncollateralised overnight call transactions "
+    "(same underlying data as the call rate). Australia's AONIA is, by RBA definition, the Cash Rate."
+)
+
+with st.spinner("Loading global rates and inflation…"):
+    # --- Euro area ---
+    ecb_dfr   = get_fred_series("ECBDFR",                  start="1999-01-01")  # Deposit Facility
+    ecb_mro   = get_fred_series("ECBMRRFR",                start="1999-01-01")  # Main Refi
+    estr      = get_fred_series("ECBESTRVOLWGTTRMDMNRT",   start="2019-10-01")  # €STR
+    de_hicp   = get_fred_series("CPHPTT01DEM659N",         start="1996-01-01")  # Germany HICP YoY
+    fr_hicp   = get_fred_series("CPHPTT01FRM659N",         start="1996-01-01")  # France HICP YoY
+    it_hicp   = get_fred_series("CPHPTT01ITM659N",         start="1996-01-01")  # Italy HICP YoY
+    es_hicp   = get_fred_series("CPHPTT01ESM659N",         start="1996-01-01")  # Spain HICP YoY
+
+    # --- UK ---
+    uk_bank   = get_fred_series("BOERUKM",                 start="1990-01-01")  # BoE Bank Rate
+    sonia     = get_fred_series("IUDSOIA",                 start="1997-01-01")  # SONIA
+    uk_cpi    = get_fred_series("CPALTT01GBM659N",         start="1990-01-01")  # UK CPI YoY
+
+    # --- Japan ---
+    jp_call   = get_fred_series("IRSTCI01JPM156N",         start="1990-01-01")  # Call/TONA proxy
+    jp_cpi    = get_fred_series("CPALTT01JPM659N",         start="1990-01-01")  # Japan CPI YoY
+
+    # --- Australia ---
+    au_cash   = get_fred_series("IRSTCB01AUM156N",         start="1990-01-01")  # RBA Cash Rate / AONIA
+    au_cpi    = get_fred_series("CPALTT01AUQ659N",         start="1990-01-01")  # AU CPI YoY (Q)
+
+r1c1, r1c2 = st.columns(2, gap="medium")
+with r1c1:
+    st.markdown("**Euro Area — ECB, €STR & National HICP YoY**")
+    fred_chart_block(
+        {
+            "ECB Deposit Facility": ecb_dfr,
+            "ECB Main Refi Rate":   ecb_mro,
+            "€STR":                 estr,
+            "Germany HICP YoY":     de_hicp,
+            "France HICP YoY":      fr_hicp,
+            "Italy HICP YoY":       it_hicp,
+            "Spain HICP YoY":       es_hicp,
+        },
+        caption="ECB policy rates, €STR overnight benchmark, and HICP YoY for DE/FR/IT/ES (%)",
+        key_prefix="eu_block",
+        include_ytd=True,
+        y_fmt=".2f", y_title="%",
+        height=420,
+    )
+with r1c2:
+    st.markdown("**United Kingdom — Bank Rate, SONIA & CPI YoY**")
+    fred_chart_block(
+        {
+            "BoE Bank Rate":  uk_bank,
+            "SONIA":          sonia,
+            "UK CPI YoY":     uk_cpi,
+        },
+        caption="Bank of England Bank Rate, SONIA overnight benchmark, and UK headline CPI YoY (%)",
+        key_prefix="uk_block",
+        include_ytd=True,
+        y_fmt=".2f", y_title="%",
+        height=420,
+    )
+
+r2c1, r2c2 = st.columns(2, gap="medium")
+with r2c1:
+    st.markdown("**Japan — Uncollateralised Call Rate / TONA & CPI YoY**")
+    fred_chart_block(
+        {
+            "Uncoll. O/N Call Rate / TONA": jp_call,
+            "Japan CPI YoY":                jp_cpi,
+        },
+        caption=(
+            "BoJ uncollateralised overnight call rate (TONA is computed from the same trades), "
+            "alongside headline CPI YoY (%). The BoJ policy rate is set as the target for this rate."
+        ),
+        key_prefix="jp_block",
+        include_ytd=True,
+        y_fmt=".2f", y_title="%",
+        height=420,
+    )
+with r2c2:
+    st.markdown("**Australia — RBA Cash Rate / AONIA & CPI YoY**")
+    fred_chart_block(
+        {
+            "RBA Cash Rate / AONIA": au_cash,
+            "Australia CPI YoY (Q)": au_cpi,
+        },
+        caption=(
+            "RBA Cash Rate Target — AONIA is the realised overnight rate the RBA publishes "
+            "as the Cash Rate. CPI is quarterly (ABS)."
+        ),
+        key_prefix="au_block",
+        include_ytd=True,
+        y_fmt=".2f", y_title="%",
+        height=420,
+    )
+
 st.markdown("---")
 st.caption(
     "Methodology: index returns from yfinance (Adj Close where available). "
     "Section 1 returns table is local currency. Section 4 RoW indices converted to USD via "
     "Polygon FX (yfinance fallback). Correlations: daily log returns, ~10y, EWMA λ = 0.94. "
-    "Core PCE = YoY % Δ of PCEPILFE. DXY = FRED DTWEXBGS. 10Y UST price proxy = ZN=F."
+    "Core PCE = YoY % Δ of PCEPILFE. DXY = FRED DTWEXBGS. 10Y UST price proxy = ZN=F. "
+    "DM ex-US rates & inflation sourced from FRED (ECB, BoE, BoJ, RBA, Eurostat HICP, OECD MEI CPI)."
 )
