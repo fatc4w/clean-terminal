@@ -124,6 +124,17 @@ def _wei_fig(wei_series: pd.Series, overlays: dict | None = None, height: int = 
     overlays: optional dict of {label: pd.Series} plotted as additional lines.
     """
     s = wei_series.dropna()
+
+    # x-axis range is pinned to the actual plotted data so recession bands
+    # (which sit at fixed 2008 / 2020 dates) can't stretch the axis back in
+    # time when a short window is selected.
+    x_min = s.index.min()
+    x_max = s.index.max()
+    for ov in (overlays or {}).values():
+        if ov is not None and len(ov) > 0:
+            x_min = min(x_min, ov.index.min())
+            x_max = max(x_max, ov.index.max())
+
     pos = s.where(s >= 0)
     neg = s.where(s < 0)
 
@@ -157,9 +168,14 @@ def _wei_fig(wei_series: pd.Series, overlays: dict | None = None, height: int = 
             line=dict(color=color, width=1.8, dash="dot"),
             hovertemplate=f"%{{x|%Y-%m-%d}}<br>{name}: %{{y:.2f}}%<extra></extra>",
         ))
+    # Only draw recession bands that actually overlap the visible range,
+    # clipped to it, so they never expand the axis.
     for r_start, r_end in _NBER_RECESSIONS:
+        rs, re = pd.Timestamp(r_start), pd.Timestamp(r_end)
+        if re < x_min or rs > x_max:
+            continue
         fig.add_vrect(
-            x0=r_start, x1=r_end,
+            x0=max(rs, x_min), x1=min(re, x_max),
             fillcolor="grey", opacity=0.15,
             layer="below", line_width=0,
             annotation_text="Recession", annotation_position="top left",
@@ -173,6 +189,7 @@ def _wei_fig(wei_series: pd.Series, overlays: dict | None = None, height: int = 
         hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.04, xanchor="left", x=0),
         plot_bgcolor=PLOT_BG, paper_bgcolor=PLOT_BG,
+        xaxis=dict(range=[x_min, x_max]),
         yaxis=dict(title="% (4Q GDP-scaled / YoY)", tickformat=".1f"),
     )
     return fig
@@ -428,10 +445,10 @@ if wei is None or len(wei) == 0:
     st.warning("WEI data unavailable — Dallas Fed page may be unreachable.")
 else:
     wei_window = st.segmented_control(
-        "Window", options=WIN_STD, default=WIN_STD[0], key="wei_win",
+        "Window", options=WIN_STD, default="Max", key="wei_win",
     )
     if wei_window is None:
-        wei_window = WIN_STD[0]
+        wei_window = "Max"
 
     wei_end = wei.index[-1]
     wei_start = _window_start(wei_end, wei_window, series_list=[wei])
