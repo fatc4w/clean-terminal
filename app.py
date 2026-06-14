@@ -10,6 +10,7 @@ from data import (
     get_market_returns_table,
     get_corr_assets_prices,
     get_fred_series,
+    get_wei_data,
     get_row_prices,
 )
 from utils import (
@@ -107,6 +108,72 @@ def _bar_fig(series: pd.Series, height=380, y_title=None, color_pos="#26a69a", c
         plot_bgcolor=PLOT_BG, paper_bgcolor=PLOT_BG,
         yaxis=dict(title=y_title) if y_title else dict(),
         bargap=0.15,
+    )
+    return fig
+
+
+_NBER_RECESSIONS = [
+    ("2008-01-01", "2009-06-30"),
+    ("2020-02-01", "2020-04-30"),
+]
+
+
+def _wei_fig(wei_series: pd.Series, overlays: dict | None = None, height: int = 420) -> go.Figure:
+    """Line + fill chart for WEI with positive (blue) / negative (red) shading.
+
+    overlays: optional dict of {label: pd.Series} plotted as additional lines.
+    """
+    s = wei_series.dropna()
+    pos = s.where(s >= 0)
+    neg = s.where(s < 0)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=s.index, y=pos.values,
+        mode="none", fill="tozeroy",
+        fillcolor="rgba(31,119,180,0.18)",
+        showlegend=False, hoverinfo="skip",
+    ))
+    fig.add_trace(go.Scatter(
+        x=s.index, y=neg.values,
+        mode="none", fill="tozeroy",
+        fillcolor="rgba(214,39,40,0.18)",
+        showlegend=False, hoverinfo="skip",
+    ))
+    fig.add_trace(go.Scatter(
+        x=s.index, y=s.values,
+        mode="lines", name="WEI",
+        line=dict(color="#1f77b4", width=1.5),
+        hovertemplate="%{x|%Y-%m-%d}<br>WEI: %{y:.2f}%<extra></extra>",
+    ))
+    overlay_colors = ["#FF6B35", "#26a69a", "#AB47BC", "#FFCA28"]
+    for i, (name, series) in enumerate((overlays or {}).items()):
+        if series is None or len(series) == 0:
+            continue
+        color = overlay_colors[i % len(overlay_colors)]
+        fig.add_trace(go.Scatter(
+            x=series.index, y=series.values,
+            mode="lines", name=name,
+            line=dict(color=color, width=1.8, dash="dot"),
+            hovertemplate=f"%{{x|%Y-%m-%d}}<br>{name}: %{{y:.2f}}%<extra></extra>",
+        ))
+    for r_start, r_end in _NBER_RECESSIONS:
+        fig.add_vrect(
+            x0=r_start, x1=r_end,
+            fillcolor="grey", opacity=0.15,
+            layer="below", line_width=0,
+            annotation_text="Recession", annotation_position="top left",
+            annotation_font_size=8, annotation_font_color="#888",
+        )
+    fig.add_hline(y=0, line_color="#555", line_width=0.8, line_dash="dash")
+    fig.update_layout(
+        height=height,
+        template="plotly_dark",
+        margin=dict(l=10, r=10, t=60, b=10),
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.04, xanchor="left", x=0),
+        plot_bgcolor=PLOT_BG, paper_bgcolor=PLOT_BG,
+        yaxis=dict(title="% (4Q GDP-scaled / YoY)", tickformat=".1f"),
     )
     return fig
 
@@ -299,10 +366,14 @@ with st.spinner("Loading FRED macro series…"):
     pce     = get_fred_series("PCEPILFE", start="1990-01-01")
     mich    = get_fred_series("MICH",     start="1990-01-01")
     payems  = get_fred_series("PAYEMS",   start="1990-01-01")
+    gdp     = get_fred_series("GDP",      start="2005-01-01")
+
+with st.spinner("Loading Dallas Fed WEI…"):
+    wei = get_wei_data()
 
 pce_yoy    = (pce.pct_change(periods=12).dropna() * 100) if len(pce) > 12 else pd.Series(dtype=float)
-# MoM change: PAYEMS is in thousands, diff(1) gives change in thousands of jobs added/lost.
 payems_mom = payems.diff(1).dropna() if len(payems) > 1 else pd.Series(dtype=float)
+gdp_yoy    = (gdp.pct_change(periods=4).dropna() * 100) if len(gdp) > 4 else pd.Series(dtype=float)
 
 # Row 1: Treasury yields | Core PCE YoY
 c1, c2 = st.columns(2, gap="medium")
@@ -344,6 +415,46 @@ with c2:
         key_prefix="payems",
         y_title="Jobs Added (thousands)",
         height=380,
+    )
+
+# Row 3: WEI + Nominal GDP YoY overlay (full width)
+st.markdown("**Dallas Fed Weekly Economic Index (WEI) vs Nominal GDP Growth YoY**")
+st.caption(
+    "WEI (blue, weekly) scaled to 4-quarter GDP growth rate — positive = above-trend activity. "
+    "GDP YoY (orange, dotted) = nominal GDP (FRED: GDP) year-over-year % change, quarterly. "
+    "Grey bands = NBER recessions."
+)
+if wei is None or len(wei) == 0:
+    st.warning("WEI data unavailable — Dallas Fed page may be unreachable.")
+else:
+    wei_window = st.segmented_control(
+        "Window", options=WIN_STD, default=WIN_STD[0], key="wei_win",
+    )
+    if wei_window is None:
+        wei_window = WIN_STD[0]
+
+    wei_end = wei.index[-1]
+    wei_start = _window_start(wei_end, wei_window, series_list=[wei])
+    wei_sliced = wei.loc[wei.index >= wei_start] if wei_start is not None else wei
+    gdp_yoy_sliced = (
+        gdp_yoy.loc[gdp_yoy.index >= wei_start]
+        if wei_start is not None and len(gdp_yoy) > 0
+        else gdp_yoy
+    )
+
+    latest_val = wei_sliced.iloc[-1]
+    latest_date = wei_sliced.index[-1]
+    mc1, mc2, mc3, mc4 = st.columns(4)
+    mc1.metric("Latest WEI", f"{latest_val:.2f}%",
+               help=f"As of {latest_date.strftime('%b %d, %Y')}")
+    mc2.metric(f"{wei_window} WEI Mean", f"{wei_sliced.mean():.2f}%")
+    if len(gdp_yoy_sliced) > 0:
+        mc3.metric("Latest GDP YoY", f"{gdp_yoy_sliced.iloc[-1]:.2f}%")
+        mc4.metric(f"{wei_window} GDP YoY Mean", f"{gdp_yoy_sliced.mean():.2f}%")
+
+    st.plotly_chart(
+        _wei_fig(wei_sliced, overlays={"GDP YoY (nominal)": gdp_yoy_sliced}),
+        width="stretch", key="wei_chart",
     )
 
 
