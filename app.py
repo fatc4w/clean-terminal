@@ -129,8 +129,11 @@ def fred_chart_block(series_dict, caption, key_prefix, include_ytd=False,
     end = max(s.index[-1] for s in valid)
     start = _window_start(end, window, series_list=valid)
 
-    sliced = {n: (s.loc[s.index >= start] if start is not None else s)
-              for n, s in series_dict.items()}
+    sliced = {}
+    for n, s in series_dict.items():
+        if s is None or len(s) == 0:
+            continue
+        sliced[n] = s.loc[s.index >= start] if start is not None else s
     fig = _line_fig(sliced, height=height, y_fmt=y_fmt, y_title=y_title)
     st.plotly_chart(fig, width="stretch", key=f"{key_prefix}_chart")
 
@@ -498,28 +501,43 @@ st.caption(
     "(same underlying data as the call rate). Australia's AONIA is, by RBA definition, the Cash Rate."
 )
 
+
+def _yoy(s: pd.Series, periods: int = 12) -> pd.Series:
+    """YoY % change. periods=12 for monthly, 4 for quarterly."""
+    if s is None or len(s) <= periods:
+        return pd.Series(dtype=float)
+    return (s.pct_change(periods=periods).dropna() * 100.0)
+
+
 with st.spinner("Loading global rates and inflation…"):
-    # --- Euro area ---
-    ecb_dfr   = get_fred_series("ECBDFR",                  start="1999-01-01")  # Deposit Facility
-    ecb_mro   = get_fred_series("ECBMRRFR",                start="1999-01-01")  # Main Refi
-    estr      = get_fred_series("ECBESTRVOLWGTTRMDMNRT",   start="2019-10-01")  # €STR
-    de_hicp   = get_fred_series("CPHPTT01DEM659N",         start="1996-01-01")  # Germany HICP YoY
-    fr_hicp   = get_fred_series("CPHPTT01FRM659N",         start="1996-01-01")  # France HICP YoY
-    it_hicp   = get_fred_series("CPHPTT01ITM659N",         start="1996-01-01")  # Italy HICP YoY
-    es_hicp   = get_fred_series("CPHPTT01ESM659N",         start="1996-01-01")  # Spain HICP YoY
+    # --- Euro area: ECB rates + €STR + national CPI indices (-> compute YoY) ---
+    ecb_dfr   = get_fred_series("ECBDFR",                start="1999-01-01")  # Deposit Facility
+    ecb_mro   = get_fred_series("ECBMRRFR",              start="1999-01-01")  # Main Refi
+    estr      = get_fred_series("ECBESTRVOLWGTTRMDMNRT", start="2019-10-01")  # €STR
+    de_cpi    = get_fred_series("DEUCPIALLMINMEI",       start="1995-01-01")  # Germany CPI idx
+    fr_cpi    = get_fred_series("FRACPIALLMINMEI",       start="1995-01-01")  # France CPI idx
+    it_cpi    = get_fred_series("ITACPIALLMINMEI",       start="1995-01-01")  # Italy CPI idx
+    es_cpi    = get_fred_series("ESPCPIALLMINMEI",       start="1995-01-01")  # Spain CPI idx
+    de_yoy    = _yoy(de_cpi, 12)
+    fr_yoy    = _yoy(fr_cpi, 12)
+    it_yoy    = _yoy(it_cpi, 12)
+    es_yoy    = _yoy(es_cpi, 12)
 
     # --- UK ---
-    uk_bank   = get_fred_series("BOERUKM",                 start="1990-01-01")  # BoE Bank Rate
-    sonia     = get_fred_series("IUDSOIA",                 start="1997-01-01")  # SONIA
-    uk_cpi    = get_fred_series("CPALTT01GBM659N",         start="1990-01-01")  # UK CPI YoY
+    uk_bank   = get_fred_series("BOERUKM",               start="1990-01-01")  # BoE Bank Rate
+    sonia     = get_fred_series("IUDSOIA",               start="1997-01-01")  # SONIA
+    uk_cpi_idx = get_fred_series("GBRCPIALLMINMEI",      start="1990-01-01")  # UK CPI idx
+    uk_yoy    = _yoy(uk_cpi_idx, 12)
 
     # --- Japan ---
-    jp_call   = get_fred_series("IRSTCI01JPM156N",         start="1990-01-01")  # Call/TONA proxy
-    jp_cpi    = get_fred_series("CPALTT01JPM659N",         start="1990-01-01")  # Japan CPI YoY
+    jp_call   = get_fred_series("IRSTCI01JPM156N",       start="1990-01-01")  # Call/TONA proxy
+    jp_cpi_idx = get_fred_series("JPNCPIALLMINMEI",      start="1990-01-01")  # Japan CPI idx
+    jp_yoy    = _yoy(jp_cpi_idx, 12)
 
-    # --- Australia ---
-    au_cash   = get_fred_series("IRSTCB01AUM156N",         start="1990-01-01")  # RBA Cash Rate / AONIA
-    au_cpi    = get_fred_series("CPALTT01AUQ659N",         start="1990-01-01")  # AU CPI YoY (Q)
+    # --- Australia (CPI is quarterly) ---
+    au_cash   = get_fred_series("IRSTCB01AUM156N",       start="1990-01-01")  # RBA Cash Rate / AONIA
+    au_cpi_idx = get_fred_series("AUSCPIALLQINMEI",      start="1990-01-01")  # AU CPI idx (Q)
+    au_yoy    = _yoy(au_cpi_idx, 4)
 
 r1c1, r1c2 = st.columns(2, gap="medium")
 with r1c1:
@@ -529,12 +547,12 @@ with r1c1:
             "ECB Deposit Facility": ecb_dfr,
             "ECB Main Refi Rate":   ecb_mro,
             "€STR":                 estr,
-            "Germany HICP YoY":     de_hicp,
-            "France HICP YoY":      fr_hicp,
-            "Italy HICP YoY":       it_hicp,
-            "Spain HICP YoY":       es_hicp,
+            "Germany CPI YoY":      de_yoy,
+            "France CPI YoY":       fr_yoy,
+            "Italy CPI YoY":        it_yoy,
+            "Spain CPI YoY":        es_yoy,
         },
-        caption="ECB policy rates, €STR overnight benchmark, and HICP YoY for DE/FR/IT/ES (%)",
+        caption="ECB policy rates, €STR overnight benchmark, and CPI YoY for DE/FR/IT/ES (%, OECD MEI)",
         key_prefix="eu_block",
         include_ytd=True,
         y_fmt=".2f", y_title="%",
@@ -546,7 +564,7 @@ with r1c2:
         {
             "BoE Bank Rate":  uk_bank,
             "SONIA":          sonia,
-            "UK CPI YoY":     uk_cpi,
+            "UK CPI YoY":     uk_yoy,
         },
         caption="Bank of England Bank Rate, SONIA overnight benchmark, and UK headline CPI YoY (%)",
         key_prefix="uk_block",
@@ -561,7 +579,7 @@ with r2c1:
     fred_chart_block(
         {
             "Uncoll. O/N Call Rate / TONA": jp_call,
-            "Japan CPI YoY":                jp_cpi,
+            "Japan CPI YoY":                jp_yoy,
         },
         caption=(
             "BoJ uncollateralised overnight call rate (TONA is computed from the same trades), "
@@ -577,7 +595,7 @@ with r2c2:
     fred_chart_block(
         {
             "RBA Cash Rate / AONIA": au_cash,
-            "Australia CPI YoY (Q)": au_cpi,
+            "Australia CPI YoY (Q)": au_yoy,
         },
         caption=(
             "RBA Cash Rate Target — AONIA is the realised overnight rate the RBA publishes "
